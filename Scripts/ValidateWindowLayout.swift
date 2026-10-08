@@ -6,6 +6,7 @@ struct ValidateWindowLayout {
     @MainActor
     static func main() throws {
         _ = NSApplication.shared
+        validateInspectorSelection()
         let runsAsApp = Bundle.main.object(forInfoDictionaryKey: "NativeDragValidation") as? Bool == true
         if runsAsApp {
             freopen("/tmp/ScreenshotHub-native-drag-app-validation.log", "w", stdout)
@@ -17,6 +18,7 @@ struct ValidateWindowLayout {
             return
         }
         precondition(!DeviceFrame.all.isEmpty, "The test must load the production device registry.")
+        validateDeviceFrameGroups()
         let catalogPath = runsAsApp ? Bundle.main.object(forInfoDictionaryKey: "ValidationAssetCatalog") as! String
             : CommandLine.arguments[1]
         let catalog = URL(fileURLWithPath: catalogPath, isDirectory: true)
@@ -70,6 +72,9 @@ struct ValidateWindowLayout {
             guard let controller = splitController(in: host) else {
                 preconditionFailure("The actual document must mount the production workspace.")
             }
+            RunLoop.current.run(until: Date().addingTimeInterval(0.05))
+            precondition(window.title == "Draft", "The selected draft must keep its window title: \(window.title)")
+            validateInspectorTabs(window: window, controller: controller)
             for _ in 0..<3 {
                 for width in Array(stride(from: 960, through: 1600, by: 8))
                     + Array(stride(from: 1600, through: 960, by: -8)) {
@@ -91,6 +96,13 @@ struct ValidateWindowLayout {
             precondition(levels == (document.snapshots.isEmpty ? [0] : [0, 0, 0, 1, 0]),
                          "Root must be invisible; top-level snapshots and groups must be peers, with grouped snapshots nested: \(levels)")
             if !document.snapshots.isEmpty {
+                outline.selectRowIndexes(.init(integer: 1), byExtendingSelection: false)
+                RunLoop.current.run(until: Date().addingTimeInterval(0.05))
+                precondition(window.title == "Top Level Snapshot", "Selecting a snapshot must update the window title.")
+                validateInspectorTabs(window: window, controller: controller)
+                outline.selectRowIndexes(.init(integer: 0), byExtendingSelection: false)
+                RunLoop.current.run(until: Date().addingTimeInterval(0.05))
+                precondition(window.title == "Draft")
                 outline.selectRowIndexes(.init([1, 3]), byExtendingSelection: false)
                 RunLoop.current.run(until: Date().addingTimeInterval(0.05))
                 precondition(outline.selectedRowIndexes == .init([1, 3]),
@@ -116,6 +128,109 @@ struct ValidateWindowLayout {
         }
     }
     
+    @MainActor
+    private static func validateDeviceFrameGroups() {
+        for family in DeviceFamily.allCases {
+            let frames = DeviceFrame.all.filter { $0.family == family }
+            let groups = DeviceFrameGroup.groups(for: frames)
+            let groupedFrames = groups.flatMap(\.frames)
+            precondition(groupedFrames.count == frames.count)
+            precondition(Set(groupedFrames.map(\.id)) == Set(frames.map(\.id)),
+                         "Grouping must retain every frame without changing identifiers.")
+            precondition(Set(groups.map(\.id)).count == groups.count)
+        }
+        let phones = DeviceFrameGroup.groups(for: DeviceFrame.all.filter { $0.family == .iPhone })
+        for model in ["iPhone 17", "iPhone 17 Pro", "iPhone 17 Pro Max"] {
+            let group = phones.first { $0.name == model }!
+            precondition(group.frames.count > 1)
+            precondition(group.frames.allSatisfy { $0.name.hasPrefix(model + " - ") },
+                         "Different iPhone models must have separate menus.")
+        }
+        let watches = DeviceFrameGroup.groups(for: DeviceFrame.all.filter { $0.family == .appleWatch })
+        for size in ["42mm", "46mm"] {
+            let group = watches.first { $0.name == "Apple Watch S10 - " + size }!
+            precondition(group.frames.count > 1)
+            precondition(group.frames.allSatisfy { $0.name.contains(" - " + size + " - ") })
+        }
+        let reference = DeviceFrame.all.first { $0.family == .iPhone }!
+        let embedded = DeviceFrame(id: "EmbeddedLegacyFrame", name: "Retired Phone - Silver",
+                                   family: .iPhone, width: reference.width, height: reference.height,
+                                   screenX: reference.screenX, screenY: reference.screenY,
+                                   screenWidth: reference.screenWidth, screenHeight: reference.screenHeight,
+                                   isLandscape: reference.isLandscape)
+        var configuration = ScreenshotConfiguration()
+        configuration.storedFrame = embedded
+        configuration.frameID = embedded.id
+        let groups = DeviceFrameGroup.groups(for: configuration.availableFrames)
+        precondition(groups.first { $0.name == "Retired Phone" }?.frames == [embedded],
+                     "Frames embedded in existing documents must remain selectable.")
+        precondition(configuration.frame?.id == embedded.id)
+        print("Validated frame model groups, color and band variants, Watch case sizes, and embedded document frames.")
+    }
+
+    @MainActor
+    private static func validateInspectorSelection() {
+        var selection = InspectorSelection()
+        precondition(selection.tab == .device && selection.isVisible)
+        selection.select(.content)
+        selection.setVisible(false)
+        precondition(selection.tab == nil && selection.displayedTab == .content)
+        selection.toggleVisibility()
+        precondition(selection.tab == .content, "Reopening the inspector must restore its last tab.")
+        selection.select(nil)
+        selection.select(.device)
+        precondition(selection.tab == .device && selection.isVisible)
+    }
+
+    @MainActor
+    private static func validateInspectorTabs(window: NSWindow, controller: WorkspaceSplitController) {
+        func findPicker(in view: NSView) -> NSSegmentedControl? {
+            if let control = view as? NSSegmentedControl,
+               control.accessibilityIdentifier() == "InspectorTabs" { return control }
+            return view.subviews.lazy.compactMap { findPicker(in: $0) }.first
+        }
+        func picker() -> NSSegmentedControl {
+            guard let picker = window.toolbar?.items.lazy.compactMap({ item in
+                item.view.flatMap { findPicker(in: $0) }
+            }).first else { preconditionFailure("The native inspector tab picker must be in the toolbar.") }
+            return picker
+        }
+        precondition(picker().segmentCount == 2 && picker().isSelected(forSegment: 0))
+        let title = window.title
+        precondition(!title.isEmpty)
+        for index in 0..<2 {
+            precondition(picker().label(forSegment: index)?.isEmpty != false,
+                         "Inspector tabs must display icons without text labels.")
+            precondition(picker().image(forSegment: index) != nil)
+            precondition(picker().toolTip(forSegment: index) != nil)
+        }
+        func select(_ index: Int, enabled: Bool) {
+            let control = picker()
+            control.setSelected(enabled, forSegment: index)
+            precondition(control.sendAction(control.action!, to: control.target))
+            RunLoop.current.run(until: Date().addingTimeInterval(0.05))
+            window.layoutIfNeeded()
+            precondition(window.title == title, "Switching or hiding inspector tabs must preserve the selected item title.")
+        }
+        select(1, enabled: true)
+        precondition(picker().isSelected(forSegment: 1) && !picker().isSelected(forSegment: 0))
+        precondition(!controller.splitViewItems[2].isCollapsed)
+        select(1, enabled: false)
+        precondition(!picker().isSelected(forSegment: 0) && !picker().isSelected(forSegment: 1))
+        precondition(controller.splitViewItems[2].isCollapsed,
+                     "Deselecting the active tab must collapse the inspector.")
+        select(0, enabled: true)
+        precondition(picker().isSelected(forSegment: 0) && !controller.splitViewItems[2].isCollapsed)
+        // Native divider gestures must keep the toolbar selection in sync too.
+        controller.splitViewItems[2].isCollapsed = true
+        RunLoop.current.run(until: Date().addingTimeInterval(0.05))
+        precondition(!picker().isSelected(forSegment: 0) && !picker().isSelected(forSegment: 1))
+        controller.splitViewItems[2].isCollapsed = false
+        RunLoop.current.run(until: Date().addingTimeInterval(0.05))
+        precondition(picker().isSelected(forSegment: 0))
+        print("Validated native inspector tab switching, exclusive selection, deselection, and divider visibility synchronization.")
+    }
+
     @MainActor
     private static func validateSnapshotDragging(outline: NSOutlineView) throws {
         guard let source = outline.dataSource else { preconditionFailure("Missing outline data source.") }
@@ -333,6 +448,8 @@ struct ValidateWindowLayout {
                 preconditionFailure("Every production column must use a SwiftUI hosting view.")
             }
             precondition(host.sizingOptions.isEmpty, "Content must not change the native column constraints.")
+            precondition(host.sceneBridgingOptions.isEmpty,
+                         "Column hosts must not override the document window title or toolbar.")
             if !item.isCollapsed {
                 precondition(column.bounds.width >= item.minimumThickness - 1)
                 if item.maximumThickness != NSSplitViewItem.unspecifiedDimension {

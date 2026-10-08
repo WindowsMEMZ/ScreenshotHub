@@ -63,6 +63,9 @@ final class WorkspaceSplitController: NSSplitViewController {
         // change split-view constraints while a window constraint pass is running.
         for host in [sidebarHost, previewHost, inspectorHost] {
             host.sizingOptions = []
+            // Only the outer document view owns the window title and toolbar.
+            // Replacing an inspector tab must not bridge an empty title into it.
+            host.sceneBridgingOptions = []
         }
         let sidebarItem = NSSplitViewItem(sidebarWithViewController: columnController(host: sidebarHost))
         sidebarItem.minimumThickness = 180
@@ -87,6 +90,7 @@ final class WorkspaceSplitController: NSSplitViewController {
         addSplitViewItem(inspectorItem)
         visibilityObservations = [sidebarItem, inspectorItem].map { item in
             item.observe(\.isCollapsed) { [weak self] _, _ in
+                guard let self, !isApplyingVisibility else { return }
                 // Divider gestures must update bindings after the native layout pass.
                 Task { @MainActor [weak self] in
                     guard let self else { return }
@@ -103,6 +107,7 @@ final class WorkspaceSplitController: NSSplitViewController {
     
     var onVisibilityChange: ((Bool, Bool) -> Void)?
     private var visibilityObservations: [NSKeyValueObservation] = []
+    private var isApplyingVisibility = false
     
     func updateContent(sidebar: AnyView, preview: AnyView, inspector: AnyView) {
         sidebarHost.rootView = sidebar
@@ -111,6 +116,10 @@ final class WorkspaceSplitController: NSSplitViewController {
     }
     
     func setVisibility(sidebar: Bool, inspector: Bool) {
+        // Programmatic changes already came from SwiftUI. Echoing their deferred
+        // notifications can overwrite a newer tab selection before it is mounted.
+        isApplyingVisibility = true
+        defer { isApplyingVisibility = false }
         if splitViewItems[0].isCollapsed == sidebar { splitViewItems[0].isCollapsed = !sidebar }
         if splitViewItems[2].isCollapsed == inspector { splitViewItems[2].isCollapsed = !inspector }
     }

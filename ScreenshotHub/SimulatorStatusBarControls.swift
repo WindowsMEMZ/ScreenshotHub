@@ -9,13 +9,9 @@ struct SimulatorStatusBarControls: View {
     @State private var errorMessage: String?
     
     var body: some View {
-        GroupBox {
-            VStack(alignment: .leading, spacing: 12) {
-                LabeledContent("Time") {
-                    TextField("9:41", text: $configuration.time)
-                        .textFieldStyle(.roundedBorder)
-                        .frame(width: 140)
-                }
+        Section {
+            Group {
+                TextField("Time", text: $configuration.time, prompt: Text("9:41"))
                 Picker("Data Network", selection: $configuration.dataNetwork) {
                     ForEach(SimulatorStatusBarConfiguration.DataNetwork.allCases) { network in
                         Text(network.label).tag(network)
@@ -26,46 +22,44 @@ struct SimulatorStatusBarControls: View {
                         Text(mode.label).tag(mode)
                     }
                 }
-                Stepper("Wi-Fi Signal: \(configuration.wifiBars) of 3", value: $configuration.wifiBars, in: 0...3)
+                Stepper(value: $configuration.wifiBars, in: 0...3) {
+                    Text("Wi-Fi Signal")
+                    Text("\(configuration.wifiBars) of 3").foregroundStyle(.secondary)
+                }
                 Picker("Cellular Status", selection: $configuration.cellularMode) {
                     ForEach(SimulatorStatusBarConfiguration.CellularMode.allCases) { mode in
                         Text(mode.label).tag(mode)
                     }
                 }
-                Stepper("Cellular Signal: \(configuration.cellularBars) of 4", value: $configuration.cellularBars, in: 0...4)
-                LabeledContent("Carrier") {
-                    TextField("Leave blank to hide", text: $configuration.operatorName)
-                        .textFieldStyle(.roundedBorder)
-                        .frame(width: 140)
+                Stepper(value: $configuration.cellularBars, in: 0...4) {
+                    Text("Cellular Signal")
+                    Text("\(configuration.cellularBars) of 4").foregroundStyle(.secondary)
                 }
+                TextField("Carrier", text: $configuration.operatorName, prompt: Text("Leave blank to hide"))
                 Picker("Battery Status", selection: $configuration.batteryState) {
                     ForEach(SimulatorStatusBarConfiguration.BatteryState.allCases) { state in
                         Text(state.label).tag(state)
                     }
                 }
-                Stepper("Battery Level: \(configuration.batteryLevel)%", value: $configuration.batteryLevel, in: 0...100)
-                VStack(alignment: .leading, spacing: 8) {
-                    Button(isUpdating ? "Updating…" : "Apply to Simulator") { updateStatusBar(clearing: false) }
-                    Button("Reset Status Bar") { updateStatusBar(clearing: true) }
+                Stepper(value: $configuration.batteryLevel, in: 0...100) {
+                    Text("Battery Level")
+                    Text("\(configuration.batteryLevel)%").foregroundStyle(.secondary)
                 }
+                Button(isUpdating ? "Updating…" : "Apply to Simulator") { updateStatusBar(clearing: false) }
+                Button("Reset Status Bar") { updateStatusBar(clearing: true) }
+            }
+            .disabled(feed.selectedDeviceID == nil || isUpdating)
+        } header: {
+            Label("Simulator Status Bar", systemImage: "cellularbars")
+        } footer: {
+            VStack(alignment: .leading, spacing: 4) {
                 Text("Changes apply to the selected simulator and appear in the preview and exported screenshots.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
                 if let errorMessage {
-                    Text(errorMessage)
-                        .font(.caption)
-                        .foregroundStyle(.red)
+                    Text(errorMessage).foregroundStyle(.red)
                 } else if let resultMessage {
                     Text(resultMessage)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
                 }
             }
-            .padding(6)
-            .disabled(feed.selectedDeviceID == nil || isUpdating)
-        } label: {
-            Label("Simulator Status Bar", systemImage: "cellularbars")
-                .font(.headline)
         }
         .onChange(of: configuration) { _, configuration in
             configuration.save()

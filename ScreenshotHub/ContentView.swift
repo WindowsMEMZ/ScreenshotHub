@@ -14,7 +14,7 @@ struct ContentView: View {
     @State private var hasLoadedDraft = false
     @State private var hasRestoredDraftSource = false
     @State private var showsSnapshots = true
-    @State private var showsInspector = true
+    @State private var inspectorSelection = InspectorSelection()
     @State private var screenshotSource = ScreenshotSource.file
     @State private var simulatorFeed = SimulatorFeed()
     @State private var simulatorRetry = 0
@@ -52,13 +52,17 @@ struct ContentView: View {
             preview: previewPanel,
             inspector: configurationPanel,
             showsSidebar: $showsSnapshots,
-            showsInspector: $showsInspector
+            showsInspector: .init(
+                get: { inspectorSelection.isVisible },
+                set: { inspectorSelection.setVisible($0) }
+            )
         )
         .frame(minWidth: 900, maxWidth: .infinity, minHeight: 650, maxHeight: .infinity)
         // AppKit positions its titlebar backgrounds relative to the full-height split view.
         .ignoresSafeArea(.container, edges: .top)
         .navigationTitle(isDraft ? "Draft" : snapshotName)
         .navigationSubtitle("\(configuration.resolution.label) px")
+        .toolbarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .navigation) {
                 Button("Snapshots", systemImage: "sidebar.left") { showsSnapshots.toggle() }
@@ -84,10 +88,14 @@ struct ContentView: View {
             }
             ToolbarSpacer()
             ToolbarItem {
-                Button("Inspector", systemImage: "sidebar.right") { showsInspector.toggle() }
-                    .keyboardShortcut("i", modifiers: [.command, .option])
+                InspectorTabPicker(selection: .init(
+                    get: { inspectorSelection.tab },
+                    set: { inspectorSelection.select($0) }
+                ))
+                .fixedSize()
             }
         }
+        .focusedSceneValue(\.toggleInspector, { inspectorSelection.toggleVisibility() })
         .fileImporter(isPresented: $isImporting, allowedContentTypes: [.image]) { result in
             switch result {
             case .success(let url): importScreenshot(url)
@@ -232,190 +240,183 @@ struct ContentView: View {
     }
     
     private var configurationPanel: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 22) {
-                VStack(alignment: .leading, spacing: 5) {
-                    Text(isDraft ? "Draft" : "Edit Snapshot")
-                        .font(.title2.bold())
-                    Text(isDraft ? "Set up the canvas, text, and device, then capture a snapshot." : "Changes are saved in the document.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+        Form {
+            switch inspectorSelection.displayedTab {
+            case .device: deviceConfiguration
+            case .content: contentConfiguration
+            }
+        }
+        .formStyle(.grouped)
+        .id(inspectorSelection.displayedTab)
+        .disabled(isPreparingExport)
+    }
+
+    @ViewBuilder
+    private var deviceConfiguration: some View {
+        Section {
+            Picker("Device Type", selection: .init(
+                get: { configuration.family },
+                set: { configuration.selectFamily($0) }
+            )) {
+                ForEach(DeviceFamily.canvasFamilies) { family in
+                    Text(family.label).tag(family)
                 }
-                if !isDraft {
-                    TextField("Snapshot Name", text: $snapshotName)
-                        .textFieldStyle(.roundedBorder)
-                }
-                
-                GroupBox {
-                    VStack(alignment: .leading, spacing: 14) {
-                        Picker("Device Type", selection: .init(
-                            get: { configuration.family },
-                            set: { configuration.selectFamily($0) }
-                        )) {
-                            ForEach(DeviceFamily.canvasFamilies) { family in
-                                Text(family.label).tag(family)
-                            }
-                        }
-                        .pickerStyle(.segmented)
-                        Picker("Output Resolution", selection: .init(
-                            get: { configuration.resolution },
-                            set: { configuration.selectResolution($0) }
-                        )) {
-                            if configuration.family == .iPhone {
-                                ForEach(PhoneResolutionCategory.allCases) { category in
-                                    Section(category.label) {
-                                        ForEach(category.resolutions) { resolution in
-                                            Text(resolution.label).tag(resolution)
-                                        }
-                                    }
-                                }
-                            } else {
-                                ForEach(configuration.family.resolutions) { resolution in
-                                    Text(resolution.label).tag(resolution)
-                                }
-                            }
-                        }
-                        ColorPicker("Canvas Background", selection: $configuration.backgroundColor, supportsOpacity: false)
-                    }
-                    .padding(6)
-                } label: {
-                    Label("Canvas", systemImage: "rectangle.portrait")
-                        .font(.headline)
-                }
-                
+            }
+            Picker("Output Resolution", selection: .init(
+                get: { configuration.resolution },
+                set: { configuration.selectResolution($0) }
+            )) {
                 if configuration.family == .iPhone {
-                    GroupBox {
-                        VStack(alignment: .leading, spacing: 14) {
-                            ForEach(configuration.availableVariantCategories) { category in
-                                Toggle(isOn: .init(
-                                    get: { configuration.variantCategories.contains(category) },
-                                    set: { enabled in
-                                        if enabled {
-                                            configuration.variantCategories.insert(category)
-                                        } else {
-                                            configuration.variantCategories.remove(category)
-                                        }
-                                    }
-                                )) {
-                                    VStack(alignment: .leading, spacing: 4) {
-                                        Text(category.label)
-                                        Text(category.closestResolution(to: configuration.resolution).label + " px")
-                                            .font(.caption)
-                                            .foregroundStyle(.secondary)
-                                    }
-                                }
+                    ForEach(PhoneResolutionCategory.allCases) { category in
+                        Section(category.label) {
+                            ForEach(category.resolutions) { resolution in
+                                Text(resolution.label).tag(resolution)
                             }
-                            if usesWatch {
-                                Toggle("Apple Watch", isOn: $configuration.exportsWatchVariant)
-                                Text("Export the Watch screen with its replaced time, without a device frame. The closest supported resolution is chosen from the captured image.")
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
+                        }
+                    }
+                } else {
+                    ForEach(configuration.family.resolutions) { resolution in
+                        Text(resolution.label).tag(resolution)
+                    }
+                }
+            }
+            ColorPicker("Canvas Background", selection: $configuration.backgroundColor, supportsOpacity: false)
+        } header: {
+            Label("Canvas", systemImage: "rectangle.portrait")
+        }
+
+        if configuration.family == .iPhone {
+            Section {
+                ForEach(configuration.availableVariantCategories) { category in
+                    Toggle(isOn: .init(
+                        get: { configuration.variantCategories.contains(category) },
+                        set: { enabled in
+                            if enabled {
+                                configuration.variantCategories.insert(category)
+                            } else {
+                                configuration.variantCategories.remove(category)
                             }
-                            Text("Export enabled variants together with this snapshot.")
+                        }
+                    )) {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(category.label)
+                            Text(category.closestResolution(to: configuration.resolution).label + " px")
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                         }
-                        .padding(6)
-                    } label: {
-                        Label("Variants", systemImage: "square.stack")
-                            .font(.headline)
                     }
                 }
-                
-                GroupBox {
-                    VStack(alignment: .leading, spacing: 14) {
-                        if isDraft {
-                            Picker("Screenshot Source", selection: $screenshotSource) {
-                                Text("Image File").tag(ScreenshotSource.file)
-                                Text("Device Hub").tag(ScreenshotSource.simulator)
-                            }
-                            .pickerStyle(.segmented)
-                        }
-                        if screenshotSource == .file {
-                            fileScreenshotControls
-                        } else {
-                            simulatorControls
-                        }
+                if usesWatch {
+                    Toggle("Apple Watch", isOn: $configuration.exportsWatchVariant)
+                }
+            } header: {
+                Label("Variants", systemImage: "square.stack")
+            } footer: {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Export enabled variants together with this snapshot.")
+                    if usesWatch {
+                        Text("Export the Watch screen with its replaced time, without a device frame. The closest supported resolution is chosen from the captured image.")
                     }
-                    .padding(6)
-                } label: {
-                    Label("App Screenshot", systemImage: "photo")
-                        .font(.headline)
-                }
-                
-                if isDraft, screenshotSource == .simulator {
-                    SimulatorStatusBarControls(feed: simulatorFeed)
-                }
-                
-                if configuration.family == .iPhone {
-                    WatchControls(configuration: $configuration.watch, screenshotData: $watchScreenshotData,
-                                  sourceName: $watchSourceName, source: $watchSource, isDraft: isDraft,
-                                  feed: watchFeed, onRetry: { watchRetry &+= 1 })
-                }
-                
-                GroupBox {
-                    VStack(alignment: .leading, spacing: 12) {
-                        Text("Headline")
-                            .font(.subheadline)
-                        HeadlineEditor(text: $configuration.title, selection: $configuration.highlightRange)
-                            .frame(height: 108)
-                            .clipShape(.rect(cornerRadius: 6))
-                            .overlay {
-                                RoundedRectangle(cornerRadius: 6).strokeBorder(.quaternary)
-                            }
-                        Text("Select text to highlight it with the theme color. Line breaks are supported.")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                        HStack {
-                            Text(configuration.highlightedText.isEmpty ? "No highlighted text" : "Highlight: \(configuration.highlightedText)")
-                                .font(.caption)
-                                .foregroundStyle(configuration.highlightedText.isEmpty ? Color.secondary : configuration.themeColor)
-                                .lineLimit(2)
-                            Spacer(minLength: 0)
-                            if !configuration.highlightedText.isEmpty {
-                                Button("Clear") { configuration.highlightRange = .init(location: 0, length: 0) }
-                                    .font(.caption)
-                            }
-                        }
-                        ColorPicker("Theme Color", selection: $configuration.themeColor, supportsOpacity: false)
-                        ColorPicker("Text Color", selection: $configuration.textColor, supportsOpacity: false)
-                        labeledSlider("Font Size", value: $configuration.fontScale, range: 0.025...0.085, display: "\(Int(Double(min(configuration.resolution.width, configuration.resolution.height)) * configuration.fontScale)) px")
-                    }
-                    .padding(6)
-                } label: {
-                    Label("Text & Colors", systemImage: "textformat")
-                        .font(.headline)
-                }
-                
-                GroupBox {
-                    VStack(alignment: .leading, spacing: 14) {
-                        Picker("Device Frame", selection: $configuration.frameID) {
-                            ForEach(configuration.availableFrames) { frame in
-                                Text(frame.displayName).tag(frame.id)
-                            }
-                        }
-                        Toggle("Device Shadow", isOn: $configuration.showsShadow)
-                        labeledSlider("Device Scale", value: $configuration.deviceScale, range: 0.55...1.1, display: "\(Int(configuration.deviceScale * 100))%")
-                        labeledSlider("Vertical Position", value: $configuration.deviceOffset, range: -0.08...0.08, display: "\(Int(configuration.deviceOffset * 100))%")
-                        Button("Reset Layout") {
-                            configuration.deviceScale = 1
-                            configuration.deviceOffset = 0
-                            configuration.fontScale = 0.052
-                        }
-                        .font(.caption)
-                    }
-                    .padding(6)
-                } label: {
-                    Label("Device", systemImage: configuration.family.symbol)
-                        .font(.headline)
                 }
             }
-            .padding(20)
+
+            WatchDeviceControls(configuration: $configuration.watch)
         }
-        .background(.background)
-        .disabled(isPreparingExport)
     }
-    
+
+    @ViewBuilder
+    private var contentConfiguration: some View {
+        Section(isDraft ? "Draft" : "Edit Snapshot") {
+            if isDraft {
+                Text("Set up the canvas, text, and device, then capture a snapshot.")
+                    .foregroundStyle(.secondary)
+            } else {
+                TextField("Snapshot Name", text: $snapshotName)
+                Text("Changes are saved in the document.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+
+        Section {
+            if isDraft {
+                Picker("Screenshot Source", selection: $screenshotSource) {
+                    Text("Image File").tag(ScreenshotSource.file)
+                    Text("Device Hub").tag(ScreenshotSource.simulator)
+                }
+            }
+            if screenshotSource == .file {
+                fileScreenshotControls
+            } else {
+                simulatorControls
+            }
+        } header: {
+            Label("App Screenshot", systemImage: "photo")
+        } footer: {
+            Text(screenshotSource == .file
+                 ? "Screenshots are scaled proportionally and cropped to fill the device screen."
+                 : "Click the screen to interact. Drag to swipe, or hold for a long press.")
+        }
+
+        if isDraft, screenshotSource == .simulator {
+            SimulatorStatusBarControls(feed: simulatorFeed)
+        }
+
+        if usesWatch {
+            WatchContentControls(configuration: $configuration.watch, screenshotData: $watchScreenshotData,
+                                 sourceName: $watchSourceName, source: $watchSource, isDraft: isDraft,
+                                 feed: watchFeed, onRetry: { watchRetry &+= 1 })
+        }
+
+        Section {
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Headline")
+                HeadlineEditor(text: $configuration.title, selection: $configuration.highlightRange)
+                    .frame(height: 108)
+                    .background(.background)
+                    .clipShape(.rect(cornerRadius: 6))
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 6).strokeBorder(.quaternary)
+                    }
+            }
+            LabeledContent("Highlight") {
+                HStack(spacing: 8) {
+                    Text(configuration.highlightedText.isEmpty ? "None" : configuration.highlightedText)
+                        .foregroundStyle(configuration.highlightedText.isEmpty ? Color.secondary : configuration.themeColor)
+                        .lineLimit(2)
+                    if !configuration.highlightedText.isEmpty {
+                        Button("Clear") { configuration.highlightRange = .init(location: 0, length: 0) }
+                    }
+                }
+            }
+            ColorPicker("Theme Color", selection: $configuration.themeColor, supportsOpacity: false)
+            ColorPicker("Text Color", selection: $configuration.textColor, supportsOpacity: false)
+            labeledSlider("Font Size", value: $configuration.fontScale, range: 0.025...0.085,
+                          display: "\(Int(Double(min(configuration.resolution.width, configuration.resolution.height)) * configuration.fontScale)) px")
+        } header: {
+            Label("Text & Colors", systemImage: "textformat")
+        } footer: {
+            Text("Select text to highlight it with the theme color.")
+        }
+
+        Section {
+            DeviceFramePicker(title: "Device Frame", selection: $configuration.frameID,
+                              frames: configuration.availableFrames)
+            Toggle("Device Shadow", isOn: $configuration.showsShadow)
+            labeledSlider("Device Scale", value: $configuration.deviceScale, range: 0.55...1.1,
+                          display: "\(Int(configuration.deviceScale * 100))%")
+            labeledSlider("Vertical Position", value: $configuration.deviceOffset, range: -0.08...0.08,
+                          display: "\(Int(configuration.deviceOffset * 100))%")
+            Button("Reset Layout") {
+                configuration.deviceScale = 1
+                configuration.deviceOffset = 0
+                configuration.fontScale = 0.052
+            }
+        } header: {
+            Label("Device", systemImage: configuration.family.symbol)
+        }
+    }
+
     private var hasScreenshot: Bool {
         let phoneHasImage = screenshotSource == .file ? screenshot != nil : simulatorFeed.hasCurrentFrame
         let watchHasImage = !usesWatch || (watchSource == .file ? watchScreenshotData != nil : watchFeed.hasCurrentFrame)
@@ -434,133 +435,92 @@ struct ContentView: View {
         screenshotSource == .simulator || (usesWatch && watchSource == .simulator)
     }
     
+    @ViewBuilder
     private var fileScreenshotControls: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Button { isImporting = true } label: {
-                HStack(spacing: 12) {
-                    if let screenshot {
-                        Image(nsImage: screenshot)
-                            .resizable()
-                            .scaledToFit()
-                            .frame(width: 40, height: 54)
-                    } else {
-                        Image(systemName: "photo.badge.plus")
-                            .font(.title)
-                            .foregroundStyle(.tint)
-                            .frame(width: 40, height: 54)
-                    }
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text(screenshot == nil ? "Choose Screenshot" : screenshotName)
-                            .fontWeight(.medium)
-                            .lineLimit(1)
-                            .truncationMode(.middle)
-                        Text(screenshot == nil ? "Or drag an image here" : screenshotSize)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                    Spacer(minLength: 0)
-                    Image(systemName: "arrow.up.doc")
-                        .foregroundStyle(.secondary)
-                }
-                .padding(12)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .background(.quaternary.opacity(0.5), in: .rect(cornerRadius: 8))
-                .overlay {
-                    RoundedRectangle(cornerRadius: 8)
-                        .strokeBorder(isDropTargeted ? Color.accentColor : .clear, lineWidth: 2)
-                }
-                .contentShape(.rect)
+        LabeledContent("Screenshot") {
+            Button(screenshot == nil ? "Choose Image…" : screenshotName) { isImporting = true }
+                .lineLimit(1)
+                .truncationMode(.middle)
+        }
+        .help("Choose an image, or drag an image onto this row.")
+        .background(isDropTargeted ? Color.accentColor.opacity(0.12) : Color.clear)
+        .dropDestination(for: URL.self) { urls, _ in
+            guard let url = urls.first else { return false }
+            importScreenshot(url)
+            return true
+        } isTargeted: { isDropTargeted = $0 }
+        if let screenshot {
+            LabeledContent("Preview") {
+                Image(nsImage: screenshot)
+                    .resizable()
+                    .scaledToFit()
+                    .frame(width: 48, height: 64)
+                    .accessibilityLabel("Screenshot preview")
             }
-            .buttonStyle(.plain)
-            .dropDestination(for: URL.self) { urls, _ in
-                guard let url = urls.first else { return false }
-                importScreenshot(url)
-                return true
-            } isTargeted: { isDropTargeted = $0 }
-            Text("Screenshots are scaled proportionally and cropped to fill the device screen.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-            if isDraft, screenshot != nil {
+            LabeledContent("Image Size", value: screenshotSize)
+            if isDraft {
                 Button("Remove Screenshot", role: .destructive) {
-                    screenshot = nil
+                    self.screenshot = nil
                     loadedScreenshotData = nil
                     screenshotName = ""
                     screenshotSize = ""
                     saveDraftEdits()
                     updatePreview()
                 }
-                .font(.caption)
             }
         }
     }
-    
+
+    @ViewBuilder
     private var simulatorControls: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack {
-                Text("Running Simulators")
-                    .font(.subheadline)
-                Spacer()
-                Button {
-                    Task { await simulatorFeed.refreshDevices() }
-                } label: {
-                    Image(systemName: "arrow.clockwise")
-                }
-                .help("Refresh Simulator List")
-            }
-            Picker("Simulator", selection: $simulatorFeed.selectedDeviceID) {
-                Text(simulatorFeed.devices.isEmpty ? "No Running Simulators" : "Select a Simulator")
-                    .tag(nil as String?)
-                ForEach(simulatorFeed.devices) { device in
-                    Text(device.label).tag(Optional(device.id))
-                }
-            }
-            .labelsHidden()
-            .frame(maxWidth: .infinity)
-            if let message = simulatorFeed.listError ?? simulatorFeed.captureError {
-                Text(message)
-                    .font(.caption)
-                    .foregroundStyle(.red)
-                if simulatorFeed.captureError != nil {
-                    Button("Retry Streaming") { simulatorRetry &+= 1 }
-                        .font(.caption)
-                }
-            } else if simulatorFeed.devices.isEmpty {
-                Text("Start an iPhone or iPad simulator in Device Hub. The list updates automatically.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            } else if simulatorFeed.hasCurrentFrame {
-                HStack(spacing: 12) {
-                    Image(systemName: simulatorFeed.selectedDevice?.isIPad == true ? "ipad" : "iphone")
-                        .font(.largeTitle)
-                        .frame(width: 40, height: 54)
-                    VStack(alignment: .leading, spacing: 4) {
-                        Label("Live Compositing", systemImage: "dot.radiowaves.left.and.right")
-                            .font(.caption)
-                            .foregroundStyle(.tint)
-                        Text(simulatorFeed.imageSize)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
+        LabeledContent("Simulator") {
+            HStack(spacing: 8) {
+                Picker("Simulator", selection: $simulatorFeed.selectedDeviceID) {
+                    Text(simulatorFeed.devices.isEmpty ? "No Running Simulators" : "Select a Simulator")
+                        .tag(nil as String?)
+                    ForEach(simulatorFeed.devices) { device in
+                        Text(device.label).tag(Optional(device.id))
                     }
                 }
-            } else if simulatorFeed.selectedDeviceID != nil {
-                HStack(spacing: 8) {
-                    ProgressView().controlSize(.small)
-                    Text("Waiting for screen frames…").font(.caption)
+                .labelsHidden()
+                Button("Refresh Simulator List", systemImage: "arrow.clockwise") {
+                    Task { await simulatorFeed.refreshDevices() }
                 }
-            }
-            Text("Click the screen to interact. Drag to swipe, or hold for a long press.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-            if let inputError = simulatorFeed.inputError {
-                Text(inputError)
-                    .font(.caption)
-                    .foregroundStyle(.red)
-                Button("Retry Connection") { simulatorRetry &+= 1 }
-                    .font(.caption)
+                .labelStyle(.iconOnly)
+                .help("Refresh Simulator List")
             }
         }
+        if let message = simulatorFeed.listError ?? simulatorFeed.captureError {
+            Text(message)
+                .font(.caption)
+                .foregroundStyle(.red)
+            if simulatorFeed.captureError != nil {
+                Button("Retry Streaming") { simulatorRetry &+= 1 }
+            }
+        } else if simulatorFeed.devices.isEmpty {
+            Text("Start an iPhone or iPad simulator in Device Hub. The list updates automatically.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        } else if simulatorFeed.hasCurrentFrame {
+            LabeledContent("Stream") {
+                Label("Live Compositing", systemImage: "dot.radiowaves.left.and.right")
+                    .foregroundStyle(.tint)
+            }
+            LabeledContent("Image Size", value: simulatorFeed.imageSize)
+        } else if simulatorFeed.selectedDeviceID != nil {
+            HStack(spacing: 8) {
+                ProgressView().controlSize(.small)
+                Text("Waiting for screen frames…").font(.caption)
+            }
+        }
+        if let inputError = simulatorFeed.inputError {
+            Text(inputError)
+                .font(.caption)
+                .foregroundStyle(.red)
+            Button("Retry Connection") { simulatorRetry &+= 1 }
+        }
     }
-    
+
     private var previewPanel: some View {
         Group {
             if hasLivePreview, let liveOverlay {
@@ -608,15 +568,7 @@ struct ContentView: View {
     }
     
     private func labeledSlider(_ title: String, value: Binding<Double>, range: ClosedRange<Double>, display: String) -> some View {
-        VStack(spacing: 6) {
-            HStack {
-                Text(title)
-                Spacer()
-                Text(display).foregroundStyle(.secondary).monospacedDigit()
-            }
-            .font(.caption)
-            Slider(value: value, in: range)
-        }
+        InspectorSlider(title: title, value: value, range: range, display: display)
     }
     
     private func importScreenshot(_ url: URL) {

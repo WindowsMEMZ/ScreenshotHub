@@ -9,5 +9,6 @@ struct ScreenshotHubApp: App {
         .defaultSize(width: 1280, height: 820)
         .windowResizability(.contentMinSize)
         .windowStyle(.titleBar)
+        .commands { InspectorCommands() }
     }
 }
