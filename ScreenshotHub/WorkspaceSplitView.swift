@@ -40,19 +40,47 @@ struct WorkspaceSplitView<Sidebar: View, Preview: View, Inspector: View>: NSView
             if showsSidebar != sidebar { showsSidebar = sidebar }
             if showsInspector != inspector { showsInspector = inspector }
         }
-        controller.setVisibility(sidebar: showsSidebar, inspector: showsInspector)
+        controller.setVisibility(
+            sidebar: showsSidebar,
+            inspector: showsInspector,
+            animated: controller.view.window?.isVisible == true
+        )
     }
 }
 
 final class WorkspaceSplitController: NSSplitViewController {
+    private static let sidebarWidthKey = "workspaceSidebarWidth"
+    private static let inspectorWidthKey = "workspaceInspectorWidth"
+
+    private static func width(
+        for key: String,
+        in defaults: UserDefaults,
+        fallback: CGFloat,
+        range: ClosedRange<CGFloat>
+    ) -> CGFloat {
+        let width = CGFloat(defaults.double(forKey: key))
+        return width.isFinite && range.contains(width) ? width : fallback
+    }
+
     private let sidebarHost: NSHostingView<AnyView>
     private let previewHost: NSHostingView<AnyView>
     private let inspectorHost: NSHostingView<AnyView>
+    private let defaults: UserDefaults
+    private var sidebarWidth: CGFloat
+    private var inspectorWidth: CGFloat
     
-    init(sidebar: AnyView, preview: AnyView, inspector: AnyView) {
+    init(
+        sidebar: AnyView,
+        preview: AnyView,
+        inspector: AnyView,
+        defaults: UserDefaults = .standard
+    ) {
         sidebarHost = .init(rootView: sidebar)
         previewHost = .init(rootView: preview)
         inspectorHost = .init(rootView: inspector)
+        self.defaults = defaults
+        sidebarWidth = Self.width(for: Self.sidebarWidthKey, in: defaults, fallback: 220, range: 180...280)
+        inspectorWidth = Self.width(for: Self.inspectorWidthKey, in: defaults, fallback: 340, range: 310...400)
         super.init(nibName: nil, bundle: nil)
         
         splitView.isVertical = true
@@ -71,7 +99,7 @@ final class WorkspaceSplitController: NSSplitViewController {
         sidebarItem.minimumThickness = 180
         sidebarItem.maximumThickness = 280
         sidebarItem.holdingPriority = .init(251)
-        sidebarItem.preferredThicknessFraction = 220.0 / 1280
+        sidebarItem.preferredThicknessFraction = sidebarWidth / 1280
         sidebarItem.canCollapseFromWindowResize = false
         
         let previewItem = NSSplitViewItem(viewController: columnController(host: previewHost, respectsSafeArea: true))
@@ -82,18 +110,30 @@ final class WorkspaceSplitController: NSSplitViewController {
         inspectorItem.minimumThickness = 310
         inspectorItem.maximumThickness = 400
         inspectorItem.holdingPriority = .init(252)
-        inspectorItem.preferredThicknessFraction = 340.0 / 1280
+        inspectorItem.preferredThicknessFraction = inspectorWidth / 1280
         inspectorItem.canCollapseFromWindowResize = false
         
         addSplitViewItem(sidebarItem)
         addSplitViewItem(previewItem)
         addSplitViewItem(inspectorItem)
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(saveWidths),
+            name: NSSplitView.didResizeSubviewsNotification,
+            object: splitView
+        )
         visibilityObservations = [sidebarItem, inspectorItem].map { item in
-            item.observe(\.isCollapsed) { [weak self] _, _ in
-                guard let self, !isApplyingVisibility else { return }
+            item.observe(\.isCollapsed) { [weak self] item, _ in
+                guard let self, !isApplyingVisibility, inspectorAnimationID == nil else { return }
+                hasPendingVisibilityChange = true
+                if !item.isCollapsed {
+                    needsRestoreWidths = true
+                    view.needsLayout = true
+                }
                 // Divider gestures must update bindings after the native layout pass.
                 Task { @MainActor [weak self] in
-                    guard let self else { return }
+                    guard let self, hasPendingVisibilityChange else { return }
+                    defer { hasPendingVisibilityChange = false }
                     onVisibilityChange?(!splitViewItems[0].isCollapsed, !splitViewItems[2].isCollapsed)
                 }
             }
@@ -108,6 +148,20 @@ final class WorkspaceSplitController: NSSplitViewController {
     var onVisibilityChange: ((Bool, Bool) -> Void)?
     private var visibilityObservations: [NSKeyValueObservation] = []
     private var isApplyingVisibility = false
+    private var hasPendingVisibilityChange = false
+    private var hasRestoredWidths = false
+    private var isRestoringWidths = false
+    private var needsRestoreWidths = false
+    private var inspectorAnimationID: UUID?
+
+    override func viewDidLayout() {
+        super.viewDidLayout()
+        guard view.window != nil, inspectorAnimationID == nil,
+              !hasRestoredWidths || needsRestoreWidths else { return }
+        hasRestoredWidths = true
+        needsRestoreWidths = false
+        restoreWidths()
+    }
     
     func updateContent(sidebar: AnyView, preview: AnyView, inspector: AnyView) {
         sidebarHost.rootView = sidebar
@@ -115,13 +169,66 @@ final class WorkspaceSplitController: NSSplitViewController {
         inspectorHost.rootView = inspector
     }
     
-    func setVisibility(sidebar: Bool, inspector: Bool) {
+    func setVisibility(sidebar: Bool, inspector: Bool, animated: Bool = false) {
+        guard !hasPendingVisibilityChange else { return }
         // Programmatic changes already came from SwiftUI. Echoing their deferred
         // notifications can overwrite a newer tab selection before it is mounted.
         isApplyingVisibility = true
         defer { isApplyingVisibility = false }
+        let isExpanding = (sidebar && splitViewItems[0].isCollapsed) || (inspector && splitViewItems[2].isCollapsed)
+        if hasRestoredWidths, isExpanding {
+            needsRestoreWidths = true
+            view.needsLayout = true
+        }
         if splitViewItems[0].isCollapsed == sidebar { splitViewItems[0].isCollapsed = !sidebar }
-        if splitViewItems[2].isCollapsed == inspector { splitViewItems[2].isCollapsed = !inspector }
+        guard splitViewItems[2].isCollapsed == inspector else { return }
+        guard animated, hasRestoredWidths, !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion else {
+            inspectorAnimationID = nil
+            splitViewItems[2].isCollapsed = !inspector
+            return
+        }
+        let animationID = UUID()
+        inspectorAnimationID = animationID
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = 0.25
+            splitViewItems[2].animator().isCollapsed = !inspector
+        } completionHandler: { [weak self] in
+            guard let self, inspectorAnimationID == animationID else { return }
+            inspectorAnimationID = nil
+            needsRestoreWidths = true
+            view.needsLayout = true
+        }
+    }
+
+    private func restoreWidths() {
+        isRestoringWidths = true
+        defer { isRestoringWidths = false }
+        if !splitViewItems[0].isCollapsed {
+            splitView.setPosition(sidebarWidth, ofDividerAt: 0)
+        }
+        if !splitViewItems[2].isCollapsed {
+            let preview = splitViewItems[1].viewController.view
+            let inspector = splitViewItems[2].viewController.view
+            // Overlay dividers can occupy no space between column frames.
+            let dividerWidth = max(0, inspector.frame.minX - preview.frame.maxX)
+            splitView.setPosition(splitView.bounds.width - inspectorWidth - dividerWidth, ofDividerAt: 1)
+        }
+    }
+
+    @objc private func saveWidths() {
+        guard view.window != nil, hasRestoredWidths,
+              inspectorAnimationID == nil, !needsRestoreWidths,
+              !isRestoringWidths, !isApplyingVisibility else { return }
+        let sidebar = splitViewItems[0]
+        let inspector = splitViewItems[2]
+        if !sidebar.isCollapsed, sidebar.viewController.view.bounds.width != sidebarWidth {
+            sidebarWidth = sidebar.viewController.view.bounds.width
+            defaults.set(sidebarWidth, forKey: Self.sidebarWidthKey)
+        }
+        if !inspector.isCollapsed, inspector.viewController.view.bounds.width != inspectorWidth {
+            inspectorWidth = inspector.viewController.view.bounds.width
+            defaults.set(inspectorWidth, forKey: Self.inspectorWidthKey)
+        }
     }
     
     private func columnController(

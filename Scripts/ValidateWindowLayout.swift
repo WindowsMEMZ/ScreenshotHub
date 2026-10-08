@@ -6,7 +6,11 @@ struct ValidateWindowLayout {
     @MainActor
     static func main() throws {
         _ = NSApplication.shared
+        let initialInspectorSelection = InspectorSelection.load()
+        defer { initialInspectorSelection.save() }
+        InspectorSelection().save()
         validateInspectorSelection()
+        validateWorkspacePersistence()
         let runsAsApp = Bundle.main.object(forInfoDictionaryKey: "NativeDragValidation") as? Bool == true
         if runsAsApp {
             freopen("/tmp/ScreenshotHub-native-drag-app-validation.log", "w", stdout)
@@ -170,6 +174,10 @@ struct ValidateWindowLayout {
 
     @MainActor
     private static func validateInspectorSelection() {
+        let suiteName = "ScreenshotHub.InspectorValidation.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        precondition(InspectorSelection.load(from: defaults).isVisible)
         var selection = InspectorSelection()
         precondition(selection.tab == .device && selection.isVisible)
         selection.select(.content)
@@ -180,6 +188,95 @@ struct ValidateWindowLayout {
         selection.select(nil)
         selection.select(.device)
         precondition(selection.tab == .device && selection.isVisible)
+        selection.setVisible(false)
+        selection.save(to: defaults)
+        selection = .load(from: defaults)
+        precondition(!selection.isVisible, "A hidden inspector must remain hidden after reopening.")
+        selection.toggleVisibility()
+        selection.save(to: defaults)
+        precondition(InspectorSelection.load(from: defaults).isVisible,
+                     "An expanded inspector must remain expanded after reopening.")
+    }
+
+    @MainActor
+    private static func validateWorkspacePersistence() {
+        let suiteName = "ScreenshotHub.WorkspaceValidation.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        func makeWindow(inspector: Bool, width: CGFloat = 1280) -> (NSWindow, WorkspaceSplitController) {
+            let controller = WorkspaceSplitController(
+                sidebar: AnyView(Text("Snapshots")),
+                preview: AnyView(Color.clear),
+                inspector: AnyView(Text("Inspector")),
+                defaults: defaults
+            )
+            controller.setVisibility(sidebar: true, inspector: inspector)
+            let window = NSWindow(
+                contentRect: .init(x: 0, y: 0, width: width, height: 820),
+                styleMask: [.titled, .resizable], backing: .buffered, defer: true
+            )
+            window.contentViewController = controller
+            window.setContentSize(.init(width: width, height: 820))
+            window.layoutIfNeeded()
+            RunLoop.current.run(until: Date().addingTimeInterval(0.05))
+            window.layoutIfNeeded()
+            return (window, controller)
+        }
+        func validateWidths(_ controller: WorkspaceSplitController, sidebar: CGFloat, inspector: CGFloat) {
+            let sidebarWidth = controller.splitViewItems[0].viewController.view.bounds.width
+            let inspectorWidth = controller.splitViewItems[2].viewController.view.bounds.width
+            precondition(abs(sidebarWidth - sidebar) <= 1,
+                         "Expected restored sidebar width \(sidebar), got \(sidebarWidth).")
+            precondition(abs(inspectorWidth - inspector) <= 1,
+                         "Expected restored inspector width \(inspector), got \(inspectorWidth).")
+        }
+        for widths in [(245.0, 375.0), (195, 320)] {
+            let (window, controller) = makeWindow(inspector: true)
+            controller.splitView.setPosition(widths.0, ofDividerAt: 0)
+            controller.splitView.setPosition(1280 - widths.1 - controller.splitView.dividerThickness, ofDividerAt: 1)
+            window.layoutIfNeeded()
+            validateWidths(controller, sidebar: widths.0, inspector: widths.1)
+            let storedInspectorWidth = defaults.double(forKey: "workspaceInspectorWidth")
+            for visible in [false, true] {
+                controller.setVisibility(sidebar: true, inspector: visible, animated: true)
+                RunLoop.current.run(until: Date().addingTimeInterval(0.1))
+                window.layoutIfNeeded()
+                precondition(defaults.double(forKey: "workspaceInspectorWidth") == storedInspectorWidth,
+                             "Animation frames must not overwrite the saved inspector width.")
+                RunLoop.current.run(until: Date().addingTimeInterval(0.25))
+                window.layoutIfNeeded()
+                precondition(controller.splitViewItems[2].isCollapsed == !visible)
+                if visible { validateWidths(controller, sidebar: widths.0, inspector: widths.1) }
+            }
+            for visible in [false, true, false] {
+                controller.setVisibility(sidebar: true, inspector: visible, animated: true)
+                RunLoop.current.run(until: Date().addingTimeInterval(0.04))
+            }
+            RunLoop.current.run(until: Date().addingTimeInterval(0.35))
+            window.layoutIfNeeded()
+            precondition(controller.splitViewItems[2].isCollapsed,
+                         "Rapid animation reversals must settle at the latest visibility.")
+            window.contentViewController = nil
+
+            let (reopenedWindow, reopenedController) = makeWindow(inspector: false, width: 1500)
+            precondition(reopenedController.splitViewItems[2].isCollapsed)
+            reopenedController.setVisibility(sidebar: true, inspector: true)
+            reopenedWindow.layoutIfNeeded()
+            validateWidths(reopenedController, sidebar: widths.0, inspector: widths.1)
+            reopenedController.splitViewItems[2].isCollapsed = true
+            reopenedWindow.layoutIfNeeded()
+            RunLoop.current.run(until: Date().addingTimeInterval(0.05))
+            reopenedController.splitViewItems[2].isCollapsed = false
+            reopenedWindow.layoutIfNeeded()
+            RunLoop.current.run(until: Date().addingTimeInterval(0.05))
+            validateWidths(reopenedController, sidebar: widths.0, inspector: widths.1)
+            reopenedWindow.contentViewController = nil
+
+            let (expandedWindow, expandedController) = makeWindow(inspector: true, width: 1100)
+            validateWidths(expandedController, sidebar: widths.0, inspector: widths.1)
+            expandedWindow.contentViewController = nil
+        }
+        print("Validated persisted sidebar and inspector widths, animated collapse/expansion, rapid reversals, and workspace recreation.")
     }
 
     @MainActor

@@ -14,7 +14,7 @@ struct ContentView: View {
     @State private var hasLoadedDraft = false
     @State private var hasRestoredDraftSource = false
     @State private var showsSnapshots = true
-    @State private var inspectorSelection = InspectorSelection()
+    @State private var inspectorSelection = InspectorSelection.load()
     @State private var screenshotSource = ScreenshotSource.file
     @State private var simulatorFeed = SimulatorFeed()
     @State private var simulatorRetry = 0
@@ -96,6 +96,7 @@ struct ContentView: View {
             }
         }
         .focusedSceneValue(\.toggleInspector, { inspectorSelection.toggleVisibility() })
+        .onChange(of: inspectorSelection.isVisible) { _, _ in inspectorSelection.save() }
         .fileImporter(isPresented: $isImporting, allowedContentTypes: [.image]) { result in
             switch result {
             case .success(let url): importScreenshot(url)

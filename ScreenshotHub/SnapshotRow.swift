@@ -21,6 +21,7 @@ struct SnapshotRow: View {
                 }
             }
             .frame(width: 42, height: 60)
+            .fixedSize(horizontal: true, vertical: false)
             VStack(alignment: .leading, spacing: 4) {
                 Text(snapshot.name.isEmpty ? "Untitled Snapshot" : snapshot.name)
                     .lineLimit(2)
@@ -33,7 +34,9 @@ struct SnapshotRow: View {
                         .foregroundStyle(.secondary)
                 }
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.vertical, 4)
         .task(id: previewRequest) {
             thumbnail = nil

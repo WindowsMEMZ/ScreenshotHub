@@ -10,6 +10,14 @@ enum InspectorTab: Int, CaseIterable {
 }
 
 struct InspectorSelection {
+    private static let visibilityKey = "workspaceInspectorVisible"
+
+    static func load(from defaults: UserDefaults = .standard) -> Self {
+        var selection = Self()
+        selection.setVisible(defaults.object(forKey: visibilityKey) as? Bool ?? true)
+        return selection
+    }
+
     private(set) var tab: InspectorTab? = .device
     private var lastTab: InspectorTab = .device
 
@@ -26,6 +34,10 @@ struct InspectorSelection {
     }
 
     mutating func toggleVisibility() { setVisible(!isVisible) }
+
+    func save(to defaults: UserDefaults = .standard) {
+        defaults.set(isVisible, forKey: Self.visibilityKey)
+    }
 }
 
 struct InspectorTabPicker: NSViewRepresentable {
