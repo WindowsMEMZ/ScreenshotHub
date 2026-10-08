@@ -42,8 +42,8 @@
             }
           ],
           "hidden" : false,
-          "image-name" : "camera.viewfinder.png",
-          "name" : "camera.viewfinder",
+          "image-name" : "viewfinder.svg",
+          "name" : "viewfinder",
           "opacity-specializations" : [
             {
               "value" : 0.9
@@ -58,7 +58,76 @@
             }
           ],
           "position" : {
-            "scale" : 0.68,
+            "scale" : 3,
+            "translation-in-points" : [
+              0,
+              0
+            ]
+          }
+        },
+        {
+          "fill-specializations" : [
+            {
+              "appearance" : "tinted",
+              "value" : "automatic"
+            }
+          ],
+          "hidden-specializations" : [
+            {
+              "value" : true
+            },
+            {
+              "appearance" : "light",
+              "value" : false
+            }
+          ],
+          "image-name" : "macbook.and.iphone 2.svg",
+          "name" : "macbook.and.iphone",
+          "opacity" : 0.9,
+          "position" : {
+            "scale" : 1.35,
+            "translation-in-points" : [
+              0,
+              0
+            ]
+          }
+        },
+        {
+          "glass" : true,
+          "hidden-specializations" : [
+            {
+              "value" : true
+            },
+            {
+              "appearance" : "dark",
+              "value" : false
+            }
+          ],
+          "image-name" : "macbook.and.iphone 3.svg",
+          "name" : "macbook.and.iphone dark",
+          "position" : {
+            "scale" : 1.35,
+            "translation-in-points" : [
+              0,
+              0
+            ]
+          }
+        },
+        {
+          "hidden-specializations" : [
+            {
+              "value" : true
+            },
+            {
+              "appearance" : "tinted",
+              "value" : false
+            }
+          ],
+          "image-name" : "macbook.and.iphone 4.svg",
+          "name" : "macbook.and.iphone mono",
+          "opacity" : 0.75,
+          "position" : {
+            "scale" : 1.35,
             "translation-in-points" : [
               0,
               0
@@ -118,21 +187,56 @@
             {
               "appearance" : "tinted",
               "value" : {
-                "solid" : "gray:0.00000,1.00000"
+                "solid" : "display-p3:0.00000,0.00000,0.00000,1.00000"
               }
             }
           ],
           "hidden" : false,
-          "image-name" : "camera.viewfinder.png",
-          "name" : "camera.viewfinder",
+          "image-name" : "viewfinder.svg",
+          "name" : "viewfinder",
           "opacity" : 0.85,
           "position" : {
-            "scale" : 0.68,
+            "scale" : 3,
             "translation-in-points" : [
               0,
               0
             ]
           }
+        },
+        {
+          "hidden-specializations" : [
+            {
+              "value" : false
+            },
+            {
+              "appearance" : "dark",
+              "value" : true
+            }
+          ],
+          "image-name" : "macbook.and.iphone 4.svg",
+          "name" : "macbook.and.iphone white",
+          "opacity" : 0.85,
+          "position" : {
+            "scale" : 1.35,
+            "translation-in-points" : [
+              0,
+              0
+            ]
+          }
+        },
+        {
+          "hidden-specializations" : [
+            {
+              "value" : true
+            },
+            {
+              "appearance" : "dark",
+              "value" : false
+            }
+          ],
+          "image-name" : "macbook.and.iphone 5.svg",
+          "name" : "macbook.and.iphone black",
+          "opacity" : 0.85
         },
         {
           "fill-specializations" : [

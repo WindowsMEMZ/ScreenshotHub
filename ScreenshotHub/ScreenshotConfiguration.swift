@@ -136,7 +136,7 @@ nonisolated struct ScreenshotConfiguration: Sendable, Equatable {
     var frameID = DeviceFrame.all.first { $0.name.contains("Pro Max - Silver") }?.id ?? ""
     var title = "Make every moment\nworth keeping."
     var highlightRange = NSRange(location: 5, length: 12)
-    var themeColor = Color(red: 1, green: 0.43, blue: 0.12)
+    var themeColor = Color.accentColor
     var textColor = Color.black
     var backgroundColor = Color(red: 0.95, green: 0.95, blue: 0.95)
     var fontScale = 0.052
