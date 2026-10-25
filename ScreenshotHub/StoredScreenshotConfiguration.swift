@@ -44,8 +44,8 @@ struct StoredScreenshotConfiguration: Codable {
     }
     
     func configuration() throws -> ScreenshotConfiguration {
-        guard family.resolutions.contains(resolution), frameID == frame.id, frame.family == family,
-              family != .iPad || frame.isLandscape == resolution.isLandscape,
+        guard family.resolutions.contains(resolution), frameID == frame.id,
+              frame.isCompatible(with: resolution, family: family),
               (0.025...0.085).contains(fontScale), (0.55...1.1).contains(deviceScale),
               (-0.08...0.08).contains(deviceOffset),
               frame.width.isFinite, frame.height.isFinite, frame.width > 0, frame.height > 0,

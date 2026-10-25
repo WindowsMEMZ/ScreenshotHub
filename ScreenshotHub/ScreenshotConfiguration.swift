@@ -16,6 +16,7 @@ nonisolated enum PhoneResolutionCategory: String, Sendable, CaseIterable, Codabl
     case faceIDLarge
     case dynamicIslandMedium
     case faceIDMedium
+    case duo
     
     var id: Self { self }
     var label: String {
@@ -24,6 +25,7 @@ nonisolated enum PhoneResolutionCategory: String, Sendable, CaseIterable, Codabl
         case .faceIDLarge: "iPhone with Face ID (large display)"
         case .dynamicIslandMedium: "iPhone with Dynamic Island (medium display)"
         case .faceIDMedium: "iPhone with Face ID (medium display)"
+        case .duo: "iPhone Duo"
         }
     }
     var resolutions: [ScreenshotResolution] {
@@ -43,6 +45,13 @@ nonisolated enum PhoneResolutionCategory: String, Sendable, CaseIterable, Codabl
                 .init(width: 1170, height: 2532),
                 .init(width: 1125, height: 2436),
                 .init(width: 1080, height: 2340)
+            ]
+        case .duo:
+            [
+                .init(width: 1398, height: 2034),
+                .init(width: 2034, height: 1398),
+                .init(width: 2007, height: 2853),
+                .init(width: 2853, height: 2007)
             ]
         }
     }
@@ -118,6 +127,7 @@ nonisolated struct DeviceFrame: Sendable, Codable, Equatable, Identifiable {
     let screenHeight: CGFloat
     let isLandscape: Bool
     
+    var isDuo: Bool { family == .iPhone && name.hasPrefix("iPhone Duo - ") }
     var displayName: String {
         name.replacingOccurrences(of: " · 竖屏", with: " · Portrait")
             .replacingOccurrences(of: " · 横屏", with: " · Landscape")
@@ -125,6 +135,34 @@ nonisolated struct DeviceFrame: Sendable, Codable, Equatable, Identifiable {
     var size: CGSize { .init(width: width, height: height) }
     var screenRect: CGRect {
         .init(x: screenX, y: screenY, width: screenWidth, height: screenHeight)
+    }
+    
+    func oriented(isLandscape: Bool) -> Self {
+        guard isDuo, self.isLandscape != isLandscape else { return self }
+        return .init(
+            id: id,
+            name: name.replacingOccurrences(of: self.isLandscape ? " · Landscape" : " · Portrait",
+                                           with: isLandscape ? " · Landscape" : " · Portrait"),
+            family: family,
+            width: height,
+            height: width,
+            screenX: isLandscape ? height - screenY - screenHeight : screenY,
+            screenY: isLandscape ? screenX : width - screenX - screenWidth,
+            screenWidth: screenHeight,
+            screenHeight: screenWidth,
+            isLandscape: isLandscape
+        )
+    }
+    
+    func isCompatible(with resolution: ScreenshotResolution, family: DeviceFamily) -> Bool {
+        guard self.family == family else { return false }
+        if family == .iPad { return isLandscape == resolution.isLandscape }
+        if family == .iPhone, PhoneResolutionCategory.duo.resolutions.contains(resolution) {
+            return isDuo
+                && min(screenWidth, screenHeight) == CGFloat(min(resolution.width, resolution.height))
+                && max(screenWidth, screenHeight) == CGFloat(max(resolution.width, resolution.height))
+        }
+        return true
     }
 }
     
@@ -156,9 +194,8 @@ nonisolated struct ScreenshotConfiguration: Sendable, Equatable {
                 frames.append(storedFrame)
             }
         }
-        return frames.filter {
-            $0.family == family && (family != .iPad || $0.isLandscape == resolution.isLandscape)
-        }
+        return frames.filter { $0.isCompatible(with: resolution, family: family) }
+            .map { $0.oriented(isLandscape: resolution.isLandscape) }
     }
     var frame: DeviceFrame? { availableFrames.first { $0.id == frameID } }
     var resolutionCategory: PhoneResolutionCategory? {
@@ -166,8 +203,8 @@ nonisolated struct ScreenshotConfiguration: Sendable, Equatable {
         return PhoneResolutionCategory.allCases.first { $0.resolutions.contains(resolution) }
     }
     var availableVariantCategories: [PhoneResolutionCategory] {
-        guard family == .iPhone else { return [] }
-        return PhoneResolutionCategory.allCases.filter { $0 != resolutionCategory }
+        guard family == .iPhone, resolutionCategory != .duo else { return [] }
+        return PhoneResolutionCategory.allCases.filter { $0 != .duo && $0 != resolutionCategory }
     }
     var variantResolutions: [ScreenshotResolution] {
         availableVariantCategories.filter { variantCategories.contains($0) }
@@ -194,7 +231,7 @@ nonisolated struct ScreenshotConfiguration: Sendable, Equatable {
     
     mutating func selectResolution(_ resolution: ScreenshotResolution) {
         self.resolution = resolution
-        if let resolutionCategory { variantCategories.remove(resolutionCategory) }
+        variantCategories.formIntersection(availableVariantCategories)
         selectCompatibleFrame()
     }
     
@@ -205,7 +242,19 @@ nonisolated struct ScreenshotConfiguration: Sendable, Equatable {
     }
     
     mutating func matchSimulatorScreen(_ size: CGSize) {
-        guard family == .iPad, size.width.isFinite, size.height.isFinite, size.width > 0, size.height > 0 else { return }
+        guard size.width.isFinite, size.height.isFinite, size.width > 0, size.height > 0 else { return }
+        if family == .iPhone {
+            guard let resolution = PhoneResolutionCategory.duo.resolutions.first(where: { $0.size == size }) else { return }
+            let previousFrame = frame
+            selectResolution(resolution)
+            if let previousFrame, previousFrame.isDuo,
+               let finish = previousFrame.name.components(separatedBy: " - ").dropFirst().first,
+               let matchingFrame = availableFrames.first(where: { $0.name.contains(" - \(finish) - ") }) {
+                frameID = matchingFrame.id
+            }
+            return
+        }
+        guard family == .iPad else { return }
         let previousFrame = frame
         let isLandscape = size.width > size.height
         if resolution.isLandscape != isLandscape,

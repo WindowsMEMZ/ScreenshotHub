@@ -51,6 +51,7 @@ struct ValidateRenderer {
         
         precondition(!DeviceFrame.all.isEmpty)
         try validateIPadSimulatorMatching()
+        try validateDuoSimulatorMatching()
         try validatePreviewResolution(screenshot: screenshot, output: output)
         precondition(Set(DeviceFrame.all.map(\.id)).count == DeviceFrame.all.count)
         for id in ["DeviceFrame15", "DeviceFrame18", "DeviceFrame21", "DeviceFrame92", "DeviceFrame110"] {
@@ -303,6 +304,77 @@ struct ValidateRenderer {
         configuration.matchSimulatorScreen(.init(width: 2064, height: 2752))
         precondition(configuration == phone)
         print("Validated native iPad screen/frame matching, all four visible edges, orientation changes, bezel model/color preservation, and invalid-size rejection.")
+    }
+    
+    @MainActor
+    static func validateDuoSimulatorMatching() throws {
+        var configuration = ScreenshotConfiguration()
+        for resolution in PhoneResolutionCategory.duo.resolutions {
+            configuration.matchSimulatorScreen(resolution.size)
+            precondition(configuration.resolution == resolution)
+            let frame = configuration.frame!
+            precondition(frame.isDuo && frame.isLandscape == resolution.isLandscape)
+            precondition(frame.screenWidth == resolution.size.width && frame.screenHeight == resolution.size.height)
+            precondition((frame.width > frame.height) == resolution.isLandscape)
+            precondition(frame.oriented(isLandscape: false).oriented(isLandscape: resolution.isLandscape) == frame)
+            let source = NSBitmapImageRep(
+                bitmapDataPlanes: nil, pixelsWide: resolution.width, pixelsHigh: resolution.height,
+                bitsPerSample: 8, samplesPerPixel: 3, hasAlpha: false,
+                isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 32
+            )!
+            let context = NSGraphicsContext(bitmapImageRep: source)!.cgContext
+            let size = resolution.size
+            context.setFillColor(NSColor.white.cgColor)
+            context.fill(.init(origin: .zero, size: size))
+            let edges: [(CGRect, NSColor, CGPoint)] = [
+                (.init(x: 0, y: size.height * 0.96, width: size.width, height: size.height * 0.04),
+                 .red, .init(x: 0.5, y: 0.02)),
+                (.init(x: 0, y: 0, width: size.width, height: size.height * 0.04),
+                 .green, .init(x: 0.5, y: 0.98)),
+                (.init(x: 0, y: 0, width: size.width * 0.04, height: size.height),
+                 .blue, .init(x: 0.02, y: 0.5)),
+                (.init(x: size.width * 0.96, y: 0, width: size.width * 0.04, height: size.height),
+                 .yellow, .init(x: 0.98, y: 0.5))
+            ]
+            for (rect, color, _) in edges {
+                context.setFillColor(color.cgColor)
+                context.fill(rect)
+            }
+            let screenshot = NSImage(cgImage: source.cgImage!, size: size)
+            for usesCutouts in [false, true] {
+                configuration.usesSourceScreenCutouts = usesCutouts
+                let output = try ScreenshotRenderer.render(configuration: configuration, screenshot: screenshot, maximumDimension: 1100)
+                let screen = ScreenshotRenderer.screenRect(configuration: configuration)
+                precondition((screen.width > screen.height) == resolution.isLandscape)
+                let scale = CGFloat(output.pixelsWide) / size.width
+                for (_, color, point) in edges {
+                    let actual = output.colorAt(x: Int((screen.minX + screen.width * point.x) * scale),
+                                                y: Int((screen.minY + screen.height * point.y) * scale))!.usingColorSpace(.sRGB)!
+                    let expected = color.usingColorSpace(.sRGB)!
+                    precondition(abs(actual.redComponent - expected.redComponent) < 0.03
+                                 && abs(actual.greenComponent - expected.greenComponent) < 0.03
+                                 && abs(actual.blueComponent - expected.blueComponent) < 0.03,
+                                 "Duo rotation must keep the screen upright and all four source edges visible.")
+                }
+                let overlay = try ScreenshotRenderer.render(configuration: configuration, screenshot: nil,
+                                                            maximumDimension: 650, screenIsTransparent: true)
+                let mask = PreviewScreenMask(image: overlay.cgImage!)
+                precondition(mask.contains(.init(x: screen.midX, y: screen.midY), canvasSize: size))
+                precondition(!mask.contains(.zero, canvasSize: size))
+            }
+        }
+        configuration.frameID = "DeviceFrame120"
+        for resolution in PhoneResolutionCategory.duo.resolutions.reversed() {
+            configuration.matchSimulatorScreen(resolution.size)
+            precondition(configuration.frame!.name.contains("Star White"), "Folding and rotation must preserve the finish.")
+        }
+        let previous = configuration
+        for size in [CGSize.zero, .init(width: CGFloat.infinity, height: 10),
+                     .init(width: 10, height: CGFloat.nan), .init(width: 1206, height: 2622)] {
+            configuration.matchSimulatorScreen(size)
+            precondition(configuration == previous)
+        }
+        print("Validated Duo simulator inner/outer transitions, all orientations, rotated bezel/screen geometry, source cutouts, masks, visible screen edges, finish preservation, and invalid-size rejection.")
     }
     
     @MainActor

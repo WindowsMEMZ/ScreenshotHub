@@ -30,11 +30,20 @@
 - (void)dealloc { free(_baseAddress); }
 @end
 
+@interface TestBacklight : NSObject
+@property int state;
+@end
+
+@implementation TestBacklight
+@end
+
 @interface TestScreen : NSObject
 @property IOSurface *framebufferSurface;
 @property unsigned int uiOrientation;
+@property TestBacklight *backlight;
 @property dispatch_queue_t callbackQueue;
 @property (copy) void (^frameCallback)(void);
+@property (copy) void (^propertiesCallback)(id);
 @property dispatch_semaphore_t disconnected;
 @end
 
@@ -48,16 +57,26 @@
     @synchronized (self) {
         self.callbackQueue = queue;
         self.frameCallback = frame;
+        self.propertiesCallback = properties;
     }
 }
 - (void)unregisterScreenCallbacksWithUUID:(NSUUID *)uuid {
-    @synchronized (self) { self.frameCallback = nil; }
+    @synchronized (self) {
+        self.frameCallback = nil;
+        self.propertiesCallback = nil;
+    }
     dispatch_semaphore_signal(self.disconnected);
 }
 - (void)emit {
     @synchronized (self) {
         void (^frame)(void) = self.frameCallback;
         if (frame) { dispatch_async(self.callbackQueue, frame); }
+    }
+}
+- (void)emitProperties {
+    @synchronized (self) {
+        void (^properties)(id) = self.propertiesCallback;
+        if (properties) { dispatch_async(self.callbackQueue, ^{ properties(self); }); }
     }
 }
 @end
@@ -167,8 +186,62 @@ static void verifyWatchDigitizer(NSData *data, NSUInteger eventType, uint32_t ex
     }
 }
 
+static void validateDuoScreens(void) {
+    SimulatorFramebuffer *stream = [SimulatorFramebuffer new];
+    TestScreen *outer = makeScreen(1398, 2034);
+    TestScreen *inner = makeScreen(2007, 2853);
+    TestScreen *island = makeScreen(20, 20);
+    outer.backlight = [TestBacklight new];
+    inner.backlight = [TestBacklight new];
+    island.backlight = outer.backlight;
+    outer.backlight.state = 2;
+    inner.backlight.state = -101;
+    dispatch_semaphore_t received = dispatch_semaphore_create(0);
+    __block CGSize size;
+    __block unsigned int inputOrientation;
+    [stream startWithScreens:@[inner, island, outer] frameHandler:^(CGImageRef image, unsigned int orientation) {
+        size = CGSizeMake(CGImageGetWidth(image), CGImageGetHeight(image));
+        inputOrientation = orientation;
+        dispatch_semaphore_signal(received);
+    } failureHandler:^(NSError *error) { NSCAssert(NO, @"Duo streaming failed: %@", error); }];
+    waitFor(received);
+    NSCAssert(CGSizeEqualToSize(size, CGSizeMake(1398, 2034)),
+        @"An inactive larger inner surface must never replace the active outer screen at startup");
+    [inner emit];
+    waitFor(received);
+    NSCAssert(CGSizeEqualToSize(size, CGSizeMake(1398, 2034)),
+        @"Updates from the inactive inner screen must not override the active outer screen");
+    for (NSNumber *usesInner in @[@YES, @NO, @YES, @NO]) {
+        BOOL isInner = usesInner.boolValue;
+        inner.backlight.state = isInner ? 2 : -101;
+        outer.backlight.state = isInner ? -101 : 2;
+        TestScreen *active = isInner ? inner : outer;
+        for (NSNumber *orientation in @[@1, @3, @4, @2]) {
+            active.uiOrientation = orientation.unsignedIntValue;
+            [active emitProperties];
+            waitFor(received);
+            BOOL sideways = active.uiOrientation == 3 || active.uiOrientation == 4;
+            CGSize expected = isInner ? CGSizeMake(2007, 2853) : CGSizeMake(1398, 2034);
+            if (sideways) { expected = CGSizeMake(expected.height, expected.width); }
+            NSCAssert(CGSizeEqualToSize(size, expected) && inputOrientation == active.uiOrientation,
+                @"Duo property changes must switch both the active display and its orientation");
+        }
+    }
+    outer.backlight.state = -101;
+    inner.backlight.state = -101;
+    [outer emitProperties];
+    NSCAssert(dispatch_semaphore_wait(received, dispatch_time(DISPATCH_TIME_NOW, 50 * NSEC_PER_MSEC)) != 0,
+        @"A transition with both displays inactive must not publish a stale inner screen");
+    [stream stop];
+    waitFor(outer.disconnected);
+    waitFor(inner.disconnected);
+    waitFor(island.disconnected);
+    printf("Validated Duo active-display selection with both surfaces retained, inactive frame callbacks, fold transitions, property-only updates, all orientations, and inactive-display suppression.\n");
+}
+
 int main(void) {
     @autoreleasepool {
+        validateDuoScreens();
         SimulatorFramebuffer *stream = [SimulatorFramebuffer new];
         TestScreen *main = makeScreen(8, 16);
         TestScreen *island = makeScreen(2, 2);

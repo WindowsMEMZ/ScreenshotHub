@@ -271,8 +271,8 @@ struct ScreenshotHubDocument: FileDocument {
               let mask = files["mask.png"]?.regularFileContents,
               let bezelBitmap = NSBitmapImageRep(data: bezel),
               let maskBitmap = NSBitmapImageRep(data: mask),
-              CGFloat(bezelBitmap.pixelsWide) == frame.width,
-              CGFloat(bezelBitmap.pixelsHigh) == frame.height,
+              CGFloat(bezelBitmap.pixelsWide) == frame.oriented(isLandscape: false).width,
+              CGFloat(bezelBitmap.pixelsHigh) == frame.oriented(isLandscape: false).height,
               maskBitmap.pixelsWide == bezelBitmap.pixelsWide,
               maskBitmap.pixelsHigh == bezelBitmap.pixelsHigh else {
             throw CocoaError(.fileReadCorruptFile)

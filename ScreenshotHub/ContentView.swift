@@ -646,7 +646,8 @@ struct ContentView: View {
     }
     
     private func matchSimulatorOrientation() {
-        guard configuration.family == .iPad, simulatorFeed.selectedDevice?.isIPad == true,
+        guard let device = simulatorFeed.selectedDevice,
+              configuration.family == (device.isIPad ? .iPad : .iPhone),
               let frame = simulatorFeed.currentFrame else { return }
         configuration.matchSimulatorScreen(.init(width: frame.width, height: frame.height))
     }

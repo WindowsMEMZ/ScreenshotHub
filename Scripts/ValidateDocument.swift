@@ -714,12 +714,13 @@ struct ValidateDocument {
             1125: [1260, 1242, 1179, 1125],
             1080: [1260, 1242, 1179, 1080]
         ]
-        precondition(DeviceFamily.iPhone.resolutions.count == 10)
+        precondition(DeviceFamily.iPhone.resolutions.count == 14)
         var configuration = ScreenshotConfiguration()
         configuration.variantCategories = Set(PhoneResolutionCategory.allCases)
-        for resolution in DeviceFamily.iPhone.resolutions {
+        for resolution in DeviceFamily.iPhone.resolutions where !PhoneResolutionCategory.duo.resolutions.contains(resolution) {
             configuration.resolution = resolution
-            let closest = PhoneResolutionCategory.allCases.map { $0.closestResolution(to: resolution).width }
+            let closest = PhoneResolutionCategory.allCases.filter { $0 != .duo }
+                .map { $0.closestResolution(to: resolution).width }
             precondition(closest == expected[resolution.width], "Each category must choose its nearest pixel dimensions.")
             precondition(configuration.variantResolutions.count == 3)
             precondition(!configuration.variantResolutions.contains(resolution), "Same-category variants must never be exported.")
@@ -731,6 +732,7 @@ struct ValidateDocument {
         configuration.selectResolution(.init(width: 1206, height: 2622))
         precondition(!configuration.variantCategories.contains(.dynamicIslandMedium))
         precondition(configuration.variantResolutions.map(\.width) == [1260, 1242, 1170])
+        try await validateDuoVariants(source: source, directory: directory)
         configuration.selectFamily(.iPad)
         precondition(configuration.variantCategories.isEmpty && configuration.variantResolutions.isEmpty)
         configuration.variantCategories = [.dynamicIslandLarge]
@@ -850,7 +852,82 @@ struct ValidateDocument {
             let edge = scaled.colorAt(x: 0, y: 0)!.usingColorSpace(.sRGB)!
             precondition(edge.redComponent > 0.95 && edge.greenComponent > 0.95 && edge.blueComponent > 0.95)
         }
-        print("Validated ten grouped iPhone resolutions, all nearest-category choices, cross-category selection, draft/snapshot persistence, legacy defaults, original/variant export parity, selected export, paired Watch scaling, aspect preservation, orientation, background margins, and failed-export cleanup.")
+        print("Validated fourteen grouped iPhone resolutions, Duo frame restrictions and Watch-only variants, all nearest-category choices, cross-category selection, draft/snapshot persistence, legacy defaults, original/variant export parity, selected export, paired Watch scaling, aspect preservation, orientation, background margins, and failed-export cleanup.")
+    }
+    
+    @MainActor
+    static func validateDuoVariants(source: Data, directory: URL) async throws {
+        var document = ScreenshotHubDocument()
+        var configuration = ScreenshotConfiguration()
+        configuration.watch.isEnabled = true
+        configuration.exportsWatchVariant = true
+        for resolution in PhoneResolutionCategory.duo.resolutions {
+            configuration.variantCategories = Set(PhoneResolutionCategory.allCases)
+            configuration.selectResolution(resolution)
+            precondition(configuration.resolutionCategory == .duo)
+            precondition(configuration.variantCategories.isEmpty && configuration.availableVariantCategories.isEmpty)
+            configuration.variantCategories = Set(PhoneResolutionCategory.allCases)
+            precondition(configuration.variantResolutions.isEmpty && configuration.variantCount == 1,
+                         "Duo must only export the Watch variant, including with stale phone selections.")
+            let isOuter = min(resolution.width, resolution.height) == 1398
+            let expectedIDs = isOuter ? ["DeviceFrame119", "DeviceFrame121"] : ["DeviceFrame118", "DeviceFrame120"]
+            precondition(configuration.availableFrames.map(\.id) == expectedIDs,
+                         "Both orientations must offer only the matching Duo screen and its two finishes.")
+            precondition(configuration.frame.map { expectedIDs.contains($0.id) } == true,
+                         "Switching screens must select a compatible frame.")
+            for frame in configuration.availableFrames {
+                precondition(frame.isLandscape == resolution.isLandscape)
+                precondition(frame.screenWidth == resolution.size.width && frame.screenHeight == resolution.size.height)
+                configuration.frameID = frame.id
+                let data = try JSONEncoder().encode(StoredScreenshotConfiguration(configuration))
+                let copy = try JSONDecoder().decode(StoredScreenshotConfiguration.self, from: data).configuration()
+                precondition(copy.resolution == resolution && copy.frame == frame && copy.hasWatchVariant)
+                precondition(copy.availableVariantCategories.isEmpty && copy.variantResolutions.isEmpty)
+                var legacy = try StoredScreenshotConfiguration(configuration)
+                legacy.frame = frame.oriented(isLandscape: false)
+                let migrated = try legacy.configuration()
+                precondition(migrated.frame == frame, "Older Duo documents must derive the correct frame orientation.")
+            }
+            var incompatible = try StoredScreenshotConfiguration(configuration)
+            incompatible.frame = DeviceFrame.all.first { $0.id == (isOuter ? "DeviceFrame118" : "DeviceFrame119") }!
+            incompatible.frameID = incompatible.frame.id
+            do {
+                _ = try incompatible.configuration()
+                preconditionFailure("Stored Duo configurations must reject the wrong screen frame.")
+            } catch let error as CocoaError {
+                precondition(error.code == .fileReadCorruptFile)
+            }
+            try document.storeFrame(for: &configuration)
+            document.snapshots.append(.init(
+                name: "Duo \(resolution.id)",
+                configuration: configuration,
+                screenshotData: source,
+                sourceName: "Duo",
+                watchScreenshotData: source
+            ))
+            configuration.watch.isEnabled = false
+            precondition(configuration.variantCount == 0)
+            configuration.watch.isEnabled = true
+        }
+        configuration.selectResolution(PhoneResolutionCategory.faceIDLarge.resolutions[0])
+        precondition(configuration.availableVariantCategories.count == 3)
+        precondition(!configuration.availableVariantCategories.contains(.duo), "Duo must not become a phone export variant.")
+        let restored = try ScreenshotHubDocument(package: document.package())
+        let folder = try await SnapshotImageExporter.exportAll(restored, to: directory)
+        let names = try FileManager.default.contentsOfDirectory(atPath: folder.path)
+        precondition(names.count == 8, "Each Duo snapshot must export its primary image and only the Watch variant.")
+        for (index, snapshot) in restored.snapshots.enumerated() {
+            let name = "\(index + 1)-iPhone-iPhone Duo.png"
+            let data = try Data(contentsOf: folder.appendingPathComponent(name))
+            let bitmap = NSBitmapImageRep(data: data)!
+            precondition(bitmap.pixelsWide == snapshot.configuration.resolution.width
+                         && bitmap.pixelsHigh == snapshot.configuration.resolution.height)
+            let watchName = "\(index + 1)-iPhone-Apple Watch.png"
+            let watchData = try Data(contentsOf: folder.appendingPathComponent(watchName))
+            let expectedWatchData = try SnapshotImageExporter.watchImageData(for: snapshot)
+            precondition(watchData == expectedWatchData)
+        }
+        print("Validated all four Duo resolutions, inner/outer frame filtering, both finishes, persistence, stale variant suppression, and primary/Watch batch exports.")
     }
     
     @MainActor

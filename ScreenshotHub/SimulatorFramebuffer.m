@@ -29,8 +29,13 @@
 - (id)descriptor;
 @end
 
+@protocol SHScreenBacklight <NSObject>
+- (int)state;
+@end
+
 @protocol SHScreenProperties <NSObject>
 - (unsigned int)uiOrientation;
+- (id<SHScreenBacklight>)backlight;
 @end
 
 @protocol SHScreen <NSObject>
@@ -242,6 +247,14 @@ typedef void *(*SHCrownMessageBuilder)(double);
     size_t largestArea = 0;
     // Auxiliary display planes can contain only the island or an overlay, not the full screen.
     for (id<SHScreen> screen in _screens) {
+        if ([screen respondsToSelector:@selector(screenProperties)]) {
+            id<SHScreenProperties> properties = [screen screenProperties];
+            if ([properties respondsToSelector:@selector(backlight)]) {
+                id<SHScreenBacklight> backlight = [properties backlight];
+                // Folded-away Duo displays retain full-sized surfaces with a negative backlight state.
+                if ([backlight respondsToSelector:@selector(state)] && [backlight state] < 0) { continue; }
+            }
+        }
         IOSurface *candidate = [screen framebufferSurface];
         size_t area = candidate.width * candidate.height;
         if (area > largestArea) {

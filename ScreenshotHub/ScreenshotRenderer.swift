@@ -94,12 +94,19 @@ nonisolated enum ScreenshotRenderer {
             let images = try sourceScreenImages(
                 bezel: originalBezel,
                 mask: mask,
-                frame: frame,
+                frame: frame.oriented(isLandscape: false),
                 key: "\(frame.id)-\(frame.screenRect)-\(frame.size)" + (frameImages.map {
                     "-\($0.bezel.hashValue)-\($0.mask.hashValue)"
                 } ?? "")
             )
             renderedBezel = NSImage(cgImage: images.bezel, size: bezel.size)
+            mask = images.mask
+        }
+        if !watchOnly, frame.isDuo, frame.isLandscape {
+            let key = "\(frame.id)-\(frame.size)-\(screenIsTransparent || configuration.usesSourceScreenCutouts)"
+                + (frameImages.map { "-\($0.bezel.hashValue)-\($0.mask.hashValue)" } ?? "")
+            let images = try landscapeFrameImages(bezel: renderedBezel, mask: mask, key: key)
+            renderedBezel = images.bezel
             mask = images.mask
         }
         if !watchOnly {
@@ -119,7 +126,7 @@ nonisolated enum ScreenshotRenderer {
                     cacheKey: frameImages.map {
                         "\(frame.id)-\($0.bezel.hashValue)-\($0.mask.hashValue)-\(frame.width)x\(frame.height)"
                     }.map { $0 + "-\(screenIsTransparent || configuration.usesSourceScreenCutouts)" }
-                        ?? "\(frame.id)-\(screenIsTransparent || configuration.usesSourceScreenCutouts)"
+                        ?? "\(frame.id)-\(frame.size)-\(screenIsTransparent || configuration.usesSourceScreenCutouts)"
                 )
             }
         
@@ -158,6 +165,37 @@ nonisolated enum ScreenshotRenderer {
     }
     
     nonisolated(unsafe) private static var sourceScreenFrames: [String: (bezel: CGImage, mask: CGImage)] = [:]
+    nonisolated(unsafe) private static var landscapeFrames: [String: (bezel: NSImage, mask: CGImage)] = [:]
+    
+    private static func landscapeFrameImages(
+        bezel: NSImage,
+        mask: CGImage,
+        key: String
+    ) throws -> (bezel: NSImage, mask: CGImage) {
+        if let images = landscapeFrames[key] { return images }
+        func rotate(_ image: CGImage) throws -> CGImage {
+            guard let context = CGContext(
+                data: nil,
+                width: image.height,
+                height: image.width,
+                bitsPerComponent: 8,
+                bytesPerRow: 0,
+                space: CGColorSpaceCreateDeviceRGB(),
+                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+            ) else { throw RenderError.bitmapCreation }
+            context.translateBy(x: 0, y: CGFloat(image.width))
+            context.rotate(by: -.pi / 2)
+            context.draw(image, in: .init(x: 0, y: 0, width: image.width, height: image.height))
+            guard let rotated = context.makeImage() else { throw RenderError.bitmapCreation }
+            return rotated
+        }
+        let rotatedBezel = try rotate(DeviceFrameImages.nativeCGImage(for: bezel))
+        let images = (NSImage(cgImage: rotatedBezel, size: .init(width: rotatedBezel.width, height: rotatedBezel.height)),
+                      try rotate(mask))
+        if landscapeFrames.count >= 8 { landscapeFrames.removeAll(keepingCapacity: true) }
+        landscapeFrames[key] = images
+        return images
+    }
     
     private static func sourceScreenImages(
         bezel: CGImage,
